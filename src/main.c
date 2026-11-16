@@ -1,12 +1,13 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>     // strtol, malloc, free, strdup, calloc
-#include <errno.h>      // errno, ERANGE
+#include <stdio.h>      // printf, fprintf, fopen, fclose, fgets, perror
+#include <unistd.h>     // getopt, optarg, optind, sleep, sysconf
+#include <stdlib.h>     // strtol, malloc, calloc, free
+#include <errno.h>      // errno, ERANGE, EACCES
 #include <limits.h>     // LONG_MAX, INT_MAX
 #include <sys/types.h>  // pid_t
-#include <string.h>     // strdup, strchr
+#include <string.h>     // strdup, strchr, memset
 #include <time.h>       // time, localtime_r, strftime, clock_gettime
-#include "proc.h"
+#include <signal.h>     // sigaction, SIGINT, SIGTERM, sig_atomic_t
+#include "proc.h"       // proc_read, read_system_uptime, struct proc_sample
 
 struct config {
     pid_t *pids;
@@ -24,6 +25,17 @@ struct monitored {
     unsigned long long prev_ticks;    /* utime + stime from the previous cycle */
     double prev_time;                 /* monotonic time of that sample, in seconds */
 };
+
+/* Set by the SIGINT/SIGTERM handler, checked by the main loop.
+ * volatile: the compiler must re-read it every time (it changes "behind its back").
+ * sig_atomic_t: guaranteed to be written in one step, so it can't be half-updated. */
+static volatile sig_atomic_t stop = 0;
+
+static void on_stop_signal(int sig)
+{
+    (void)sig;   /* unused parameter, silences -Wextra */
+    stop = 1;    /* only set a flag: printf/free/fclose are not safe inside a handler */
+}
 
 static void print_usage(FILE *out, const char *prog)
 {
@@ -154,7 +166,7 @@ int main(int argc, char *argv[])
         goto out;
     }
 
-    /* Optional: redirect stdout if -o given */
+    /* Open the output file if -o was given */
     if (cfg.outfile) {
         outf = fopen(cfg.outfile, "a");
         if (!outf) {
@@ -185,7 +197,16 @@ int main(int argc, char *argv[])
     fprintf(outf, "%-19s  %7s  %-15s  %6s  %11s  %s\n",
             "Timestamp", "PID", "Name", "CPU %", "Memory (MB)", "Uptime");
 
-    for (long cycle = 0; cfg.count < 0 || cycle < cfg.count; cycle++) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_stop_signal;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGINT, &sa, NULL) == -1 || sigaction(SIGTERM, &sa, NULL) == -1) {
+        perror("sigaction");
+        goto out;
+    }
+
+    for (long cycle = 0; !stop && (cfg.count < 0 || cycle < cfg.count); cycle++) {
         /* a) timestamp string */
         time_t now = time(NULL);
         struct tm tm;
@@ -281,6 +302,9 @@ int main(int argc, char *argv[])
         if (cfg.count < 0 || cycle + 1 < cfg.count)
             sleep(cfg.interval);
     }
+
+    if (stop)
+        fprintf(stderr, "\nStop signal received, exiting.\n");
 
     rc = 0;
 
