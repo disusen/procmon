@@ -1,0 +1,34 @@
+[Unit]
+Description=procmon - Linux process monitor
+Documentation=https://github.com/disusen/procmon
+After=local-fs.target
+# Stop retrying if it fails 3 times within 60 s (e.g. misconfigured PIDs)
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=procmon
+Group=procmon
+
+# PIDs and interval are configured here, not in this unit file
+EnvironmentFile=/etc/procmon/procmon.conf
+
+# Creates /var/log/procmon owned by the procmon user
+LogsDirectory=procmon
+
+ExecStart=/usr/local/bin/procmon -p ${PROCMON_PIDS} -i ${PROCMON_INTERVAL} -o /var/log/procmon/procmon.log
+
+# systemctl stop sends SIGTERM, which procmon handles gracefully
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=10
+
+# Basic hardening: the monitor only needs to read /proc and write its log
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
