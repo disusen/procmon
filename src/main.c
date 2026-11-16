@@ -42,8 +42,10 @@ static int parse_long(const char *s, long min, long max, long *out)
 static int parse_pids(const char *arg, struct config *cfg)
 {
     char *copy = strdup(arg);
-    if (!copy)
+    if (!copy){
+        perror("strdup");
         return -1;
+    }
 
     size_t commas = 0;
     for (const char *p = copy; *p; p++)
@@ -52,10 +54,18 @@ static int parse_pids(const char *arg, struct config *cfg)
 
     cfg->pids = malloc((commas + 1) * sizeof(pid_t));
     if (!cfg->pids) {
+        perror("malloc");
         free(copy);
         return -1;
     }
-    cfg->npids = 0;
+    
+    if (cfg->npids==0)
+    {
+        fprintf(stderr, "No valid PIDs given\n");
+        free(cfg->pids);
+        cfg->pids = NULL;
+        return -1;
+    }
 
     char *tok = copy;
     while (tok) {
@@ -99,7 +109,6 @@ int main(int argc, char *argv[])
                     goto out;
                 }
                 if (parse_pids(optarg, &cfg) != 0) {
-                    fprintf(stderr, "No valid PIDs given\n");
                     goto out;
                 }
                 break;
