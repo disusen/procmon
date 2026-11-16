@@ -2,3 +2,4 @@ procmon
 *.o
 *.d
 .vscode/
+tests/test_proc

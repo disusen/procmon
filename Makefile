@@ -12,9 +12,15 @@ $(TARGET): $(OBJ)
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+tests/test_proc: tests/test_proc.c src/proc.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
+test: tests/test_proc
+	./tests/test_proc
+
 clean:
-	rm -f $(TARGET) src/*.o src/*.d
+	rm -f $(TARGET) src/*.o src/*.d tests/test_proc tests/*.d
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all clean
+.PHONY: all test clean
