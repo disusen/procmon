@@ -1,11 +1,12 @@
-#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <unistd.h>
-#include <stdlib.h>     // strtol, malloc, free, strdup
+#include <stdlib.h>     // strtol, malloc, free, strdup, calloc
 #include <errno.h>      // errno, ERANGE
 #include <limits.h>     // LONG_MAX, INT_MAX
 #include <sys/types.h>  // pid_t
 #include <string.h>     // strdup, strchr
+#include <time.h>       // time, localtime_r, strftime, clock_gettime
+#include "proc.h"
 
 struct config {
     pid_t *pids;
@@ -13,6 +14,15 @@ struct config {
     long interval;
     long count;          // -1 = run forever
     const char *outfile; // NULL = stdout
+};
+
+/* State kept for each monitored PID across cycles */
+struct monitored {
+    pid_t pid;
+    int alive;                        /* 1 = still monitoring, 0 = gone/inaccessible */
+    int have_prev;                    /* 0 until first sample -> CPU% shown as N/A */
+    unsigned long long prev_ticks;    /* utime + stime from the previous cycle */
+    double prev_time;                 /* monotonic time of that sample, in seconds */
 };
 
 static void print_usage(FILE *out, const char *prog)
@@ -58,14 +68,6 @@ static int parse_pids(const char *arg, struct config *cfg)
         free(copy);
         return -1;
     }
-    
-    if (cfg->npids==0)
-    {
-        fprintf(stderr, "No valid PIDs given\n");
-        free(cfg->pids);
-        cfg->pids = NULL;
-        return -1;
-    }
 
     char *tok = copy;
     while (tok) {
@@ -88,6 +90,7 @@ static int parse_pids(const char *arg, struct config *cfg)
     free(copy);
 
     if (cfg->npids == 0) {
+        fprintf(stderr, "No valid PIDs given\n");
         free(cfg->pids);
         cfg->pids = NULL;
         return -1;
@@ -98,6 +101,8 @@ static int parse_pids(const char *arg, struct config *cfg)
 int main(int argc, char *argv[])
 {
     struct config cfg = { NULL, 0, 2, -1, NULL };
+    struct monitored *mons = NULL;
+    FILE *outf = stdout;    
     int opt;
     int rc = 1; // return code
 
@@ -149,14 +154,141 @@ int main(int argc, char *argv[])
         goto out;
     }
 
-    printf("pids=");
-    for (size_t i = 0; i < cfg.npids; i++)
-        printf("%s%d", i ? "," : "", (int)cfg.pids[i]);
-    printf(" interval=%ld count=%ld outfile=%s\n",
-           cfg.interval, cfg.count, cfg.outfile ? cfg.outfile : "(stdout)");
-    rc = 0; // reached the end, success, set exit code to 0.
+    /* Optional: redirect stdout if -o given */
+    if (cfg.outfile) {
+        outf = fopen(cfg.outfile, "a");
+        if (!outf) {
+            perror(cfg.outfile);
+            outf = stdout;
+            goto out;
+        }
+    }
+
+    long clk = sysconf(_SC_CLK_TCK);
+    if (clk <= 0) {
+        fprintf(stderr, "sysconf(_SC_CLK_TCK) failed\n");
+        goto out;
+    }
+
+    mons = calloc(cfg.npids, sizeof *mons);
+    if (!mons) {
+        perror("calloc");
+        goto out;
+    }
+
+    for (size_t i = 0; i < cfg.npids; i++) {
+        mons[i].pid = cfg.pids[i];
+        mons[i].alive = 1;
+    }
+
+    /* print the header */
+    fprintf(outf, "%-19s  %7s  %-15s  %6s  %11s  %s\n",
+            "Timestamp", "PID", "Name", "CPU %", "Memory (MB)", "Uptime");
+
+    for (long cycle = 0; cfg.count < 0 || cycle < cfg.count; cycle++) {
+        /* a) timestamp string */
+        time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        char tstr[32];
+        strftime(tstr, sizeof tstr, "%Y-%m-%d %H:%M:%S", &tm);
+
+        /* b) system uptime */
+        double sys_up;
+        if (read_system_uptime(&sys_up) != 0) {
+            fprintf(stderr, "Failed to read system uptime\n");
+            goto out;
+        }
+
+        /* c) monotonic now for CPU% */
+        struct timespec ts;
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+            perror("clock_gettime");
+            goto out;
+        }
+        double now_mono = ts.tv_sec + ts.tv_nsec / 1e9;
+
+        /* d) sample each alive PID */
+        size_t alive_count = 0;
+        for (size_t i = 0; i < cfg.npids; i++) {
+            if (!mons[i].alive)
+                continue;
+
+            struct proc_sample s;
+            if (proc_read(mons[i].pid, &s) != 0) {
+                if (!mons[i].have_prev)
+                    fprintf(stderr, "PID %d: %s\n", (int)mons[i].pid,
+                            errno == EACCES ? "permission denied" : "no such process");
+                else
+                    fprintf(stderr, "PID %d: process terminated, no longer monitored\n",
+                            (int)mons[i].pid);
+                mons[i].alive = 0;
+                continue;
+            }
+
+            unsigned long long ticks = s.utime + s.stime;
+
+            /* CPU % */
+            char cpu_str[16];
+            if (mons[i].have_prev && ticks >= mons[i].prev_ticks && now_mono > mons[i].prev_time) {
+                double cpu = (ticks - mons[i].prev_ticks) / (double)clk / (now_mono - mons[i].prev_time) * 100.0;
+                snprintf(cpu_str, sizeof cpu_str, "%6.1f", cpu);
+            } else {
+                snprintf(cpu_str, sizeof cpu_str, "%6s", "N/A");
+            }
+
+            mons[i].prev_ticks = ticks;
+            mons[i].prev_time = now_mono;
+            mons[i].have_prev = 1;
+
+            /* uptime */
+            long up = (long)(sys_up - s.starttime / (double)clk);
+            if (up < 0)
+                up = 0;
+            long h = up / 3600;
+            long m = (up % 3600) / 60;
+            long sec = up % 60;
+            char up_str[32];
+            snprintf(up_str, sizeof up_str, "%02ld:%02ld:%02ld", h, m, sec);
+
+            /* memory in MB */
+            double mem_mb = s.rss_kb / 1024.0;
+
+            /* print the row */
+            fprintf(outf, "%-19s  %7d  %-15.15s  %s  %11.1f  %s\n",
+                    tstr, (int)mons[i].pid, s.name, cpu_str, mem_mb, up_str);
+
+            alive_count++;
+        }
+
+        /* e) all exited? */
+        if (alive_count == 0) {
+            if (cycle == 0) {
+                fprintf(stderr, "None of the given PIDs could be monitored\n");
+                goto out;                       /* rc stays 1 */
+            }
+            fprintf(stderr, "All monitored processes have exited\n");
+            break;                              /* normal end, rc = 0 */
+        }
+
+        /* write the cycle out now and catch write errors (disk full etc.) */
+        if (fflush(outf) == EOF || ferror(outf)) {
+            perror("write");
+            goto out;
+        }
+
+        /* f) sleep unless last cycle */
+        if (cfg.count < 0 || cycle + 1 < cfg.count)
+            sleep(cfg.interval);
+    }
+
+    rc = 0;
 
 out:
+
+    if (outf != stdout)
+        fclose(outf);
+    free(mons);
     free(cfg.pids);
     return rc;
 }
