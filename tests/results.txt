@@ -2,24 +2,24 @@
 ==================================================================
 Scenario 1: Monitor a single valid PID
 ==================================================================
-$ procmon -p 8974 -i 1 -n 3
+$ procmon -p 11319 -i 1 -n 3
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:02     8974  sleep               N/A          7.8  00:00:00
-2026-11-17 18:01:03     8974  sleep               0.0          7.8  00:00:01
-2026-11-17 18:01:04     8974  sleep               0.0          7.8  00:00:02
+2026-11-17 18:33:25    11319  sleep               N/A          7.8  00:00:00
+2026-11-17 18:33:26    11319  sleep               0.0          7.8  00:00:01
+2026-11-17 18:33:27    11319  sleep               0.0          7.8  00:00:02
 [exit code: 0]
 
 ==================================================================
 Scenario 2: Monitor multiple valid PIDs
 ==================================================================
-$ procmon -p 9102,9103 -i 1 -n 3
+$ procmon -p 11340,11341 -i 1 -n 3
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:04     9102  sleep               N/A          7.9  00:00:00
-2026-11-17 18:01:04     9103  sh                  N/A          1.9  00:00:00
-2026-11-17 18:01:05     9102  sleep               0.0          7.9  00:00:01
-2026-11-17 18:01:05     9103  sh                 42.4          1.9  00:00:01
-2026-11-17 18:01:06     9102  sleep               0.0          7.9  00:00:02
-2026-11-17 18:01:06     9103  sh                 49.5          1.9  00:00:02
+2026-11-17 18:33:27    11340  sleep               N/A          7.8  00:00:00
+2026-11-17 18:33:27    11341  sh                  N/A          1.9  00:00:00
+2026-11-17 18:33:28    11340  sleep               0.0          7.8  00:00:01
+2026-11-17 18:33:28    11341  sh                 96.2          1.9  00:00:01
+2026-11-17 18:33:29    11340  sleep               0.0          7.8  00:00:02
+2026-11-17 18:33:29    11341  sh                 99.6          1.9  00:00:02
 [exit code: 0]
 
 ==================================================================
@@ -32,29 +32,29 @@ None of the given PIDs could be monitored
 [exit code: 1]
 
 # Non-existent PID mixed with a valid one: the valid one is still monitored
-$ procmon -p 4194305,9164 -i 1 -n 2
+$ procmon -p 4194305,11355 -i 1 -n 2
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
 PID 4194305: no such process
-2026-11-17 18:01:06     9164  sleep               N/A          8.1  00:00:00
-2026-11-17 18:01:07     9164  sleep               0.0          8.1  00:00:01
+2026-11-17 18:33:29    11355  sleep               N/A          7.9  00:00:00
+2026-11-17 18:33:30    11355  sleep               0.0          7.9  00:00:01
 [exit code: 0]
 
 # Syntactically invalid PIDs are skipped with a warning
-$ procmon -p abc,9164,,0 -i 1 -n 1
+$ procmon -p abc,11355,,0 -i 1 -n 1
 warning: invalid PID skipped: abc
 warning: invalid PID skipped: 0
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:07     9164  sleep               N/A          8.1  00:00:01
+2026-11-17 18:33:30    11355  sleep               N/A          7.9  00:00:01
 [exit code: 0]
 
 ==================================================================
 Scenario 4: Monitor a process that terminates during monitoring
 ==================================================================
-$ procmon -p 9223 -i 1 -n 5
+$ procmon -p 11358 -i 1 -n 5
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:07     9223  sleep               N/A          8.0  00:00:00
-2026-11-17 18:01:08     9223  sleep               0.0          8.0  00:00:01
-PID 9223: process terminated, no longer monitored
+2026-11-17 18:33:30    11358  sleep               N/A          8.0  00:00:00
+2026-11-17 18:33:31    11358  sleep               0.0          8.0  00:00:01
+PID 11358: process terminated, no longer monitored
 All monitored processes have exited
 [exit code: 0]
 
@@ -99,9 +99,9 @@ Scenario 7: Stop the application using Ctrl+C (SIGINT)
 # procmon runs without -n; SIGINT is sent after ~2.5 s (same signal as Ctrl+C)
 $ procmon -p 1 -i 1   (then SIGINT)
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:09        1  systemd             N/A         16.5  02:31:25
-2026-11-17 18:01:10        1  systemd             0.0         16.5  02:31:26
-2026-11-17 18:01:11        1  systemd             0.0         16.5  02:31:27
+2026-11-17 18:33:32        1  systemd             N/A         16.5  03:03:48
+2026-11-17 18:33:33        1  systemd             0.0         16.5  03:03:49
+2026-11-17 18:33:34        1  systemd             0.0         16.5  03:03:50
 
 Stop signal received, exiting.
 [exit code: 0]
@@ -109,9 +109,9 @@ Stop signal received, exiting.
 # Same with SIGTERM (what 'systemctl stop' sends)
 $ procmon -p 1 -i 1   (then SIGTERM)
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:12        1  systemd             N/A         16.5  02:31:27
-2026-11-17 18:01:13        1  systemd             0.0         16.5  02:31:28
-2026-11-17 18:01:14        1  systemd             0.0         16.5  02:31:29
+2026-11-17 18:33:34        1  systemd             N/A         16.5  03:03:50
+2026-11-17 18:33:35        1  systemd             0.0         16.5  03:03:51
+2026-11-17 18:33:36        1  systemd             0.0         16.5  03:03:52
 
 Stop signal received, exiting.
 [exit code: 0]
@@ -119,16 +119,16 @@ Stop signal received, exiting.
 ==================================================================
 Scenario 8: Write output to a file
 ==================================================================
-$ procmon -p 1,9446 -i 1 -n 3 -o /tmp/tmp.UbqzikkiYg/process.log
+$ procmon -p 1,11419 -i 1 -n 3 -o /tmp/tmp.27IrNNKnnl/process.log
 [exit code: 0]
 # Contents of the output file:
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:14        1  systemd             N/A         16.5  02:31:30
-2026-11-17 18:01:14     9446  sleep               N/A          7.9  00:00:00
-2026-11-17 18:01:15        1  systemd             0.0         16.5  02:31:31
-2026-11-17 18:01:15     9446  sleep               0.0          7.9  00:00:01
-2026-11-17 18:01:16        1  systemd             0.0         16.5  02:31:32
-2026-11-17 18:01:16     9446  sleep               0.0          7.9  00:00:02
+2026-11-17 18:33:37        1  systemd             N/A         16.5  03:03:53
+2026-11-17 18:33:37    11419  sleep               N/A          8.1  00:00:00
+2026-11-17 18:33:38        1  systemd             0.0         16.5  03:03:54
+2026-11-17 18:33:38    11419  sleep               0.0          8.1  00:00:01
+2026-11-17 18:33:39        1  systemd             0.0         16.5  03:03:55
+2026-11-17 18:33:39    11419  sleep               0.0          8.1  00:00:02
 
 ==================================================================
 Scenario 9: Attempt to write to a file that cannot be accessed
@@ -139,25 +139,46 @@ $ procmon -p 1 -n 1 -o /nonexistent_dir/process.log
 $ procmon -p 1 -n 1 -o /root/process.log
 /root/process.log: Permission denied
 [exit code: 1]
-$ procmon -p 1 -n 1 -o /tmp/tmp.UbqzikkiYg/readonly.log
-/tmp/tmp.UbqzikkiYg/readonly.log: Permission denied
+$ procmon -p 1 -n 1 -o /tmp/tmp.27IrNNKnnl/readonly.log
+/tmp/tmp.27IrNNKnnl/readonly.log: Permission denied
 [exit code: 1]
 
 ==================================================================
 Scenario 10: Monitor multiple processes when one of them terminates
 ==================================================================
-$ procmon -p 9512,9513 -i 1 -n 5
+$ procmon -p 11429,11430 -i 1 -n 5
 Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
-2026-11-17 18:01:16     9512  sleep               N/A          4.3  00:00:00
-2026-11-17 18:01:16     9513  sleep               N/A          4.2  00:00:00
-2026-11-17 18:01:17     9512  sleep               0.0          8.1  00:00:01
-2026-11-17 18:01:17     9513  sleep               0.0          8.0  00:00:01
-2026-11-17 18:01:18     9512  sleep               0.0          8.1  00:00:02
-2026-11-17 18:01:18     9513  sleep               0.0          8.0  00:00:02
-2026-11-17 18:01:19     9512  sleep               0.0          8.1  00:00:03
-PID 9513: process terminated, no longer monitored
-2026-11-17 18:01:20     9512  sleep               0.0          8.1  00:00:04
+2026-11-17 18:33:39    11429  sleep               N/A          7.8  00:00:00
+2026-11-17 18:33:39    11430  sleep               N/A          7.9  00:00:00
+2026-11-17 18:33:40    11429  sleep               0.0          7.8  00:00:01
+2026-11-17 18:33:40    11430  sleep               0.0          7.9  00:00:01
+2026-11-17 18:33:41    11429  sleep               0.0          7.8  00:00:02
+PID 11430: process terminated, no longer monitored
+2026-11-17 18:33:42    11429  sleep               0.0          7.8  00:00:03
+2026-11-17 18:33:43    11429  sleep               0.0          7.8  00:00:04
 [exit code: 0]
+
+==================================================================
+Optional feature: CSV output (-c)
+==================================================================
+$ procmon -p 1,11436 -i 1 -n 2 -c
+timestamp,pid,name,cpu_percent,memory_mb,uptime_s
+2026-11-17 18:33:43,1,systemd,,16.5,11039
+2026-11-17 18:33:43,11436,sleep,,8.0,0
+2026-11-17 18:33:44,1,systemd,0.0,16.5,11040
+2026-11-17 18:33:44,11436,sleep,0.0,8.0,1
+[exit code: 0]
+
+# A process name containing a comma is quoted (RFC 4180)
+$ procmon -p 11438 -n 1 -c
+timestamp,pid,name,cpu_percent,memory_mb,uptime_s
+2026-11-17 18:33:44,11438,"a,b",,2.0,0
+[exit code: 0]
+
+# Parsed back with Python's csv module (6 fields per row):
+['timestamp', 'pid', 'name', 'cpu_percent', 'memory_mb', 'uptime_s']
+['2026-11-17 18:33:44', '1', 'systemd', '', '16.5', '11040']
+['2026-11-17 18:33:44', '11438', 'a,b', '', '2.0', '0']
 
 ==================================================================
 All scenarios finished.

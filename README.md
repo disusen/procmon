@@ -37,7 +37,7 @@ Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
 - Configurable interval (`-i`) and number of cycles (`-n`), or runs until stopped
 - Reports PID, process name, CPU %, resident memory (RSS), process uptime and a
   timestamp for every measurement
-- Writes to stdout or to a file (`-o`)
+- Writes to stdout or to a file (`-o`), as a readable table or as CSV (`-c`)
 - Keeps monitoring the remaining processes when one of them exits or cannot be
   read
 - Shuts down gracefully on `SIGINT` (Ctrl+C) and `SIGTERM` (`systemctl stop`):
@@ -90,6 +90,9 @@ warning fails the build.
 # Monitor your current shell once per second, 5 times
 ./procmon -p $$ -i 1 -n 5
 
+# CSV output into a file, e.g. for a spreadsheet
+./procmon -p 1234,2345 -i 5 -c -o process.csv
+
 # Show help
 ./procmon -h
 ```
@@ -105,6 +108,7 @@ shell), or `sleep 300 & echo $!` (a test process).
 | `-i SEC` | Monitoring interval in seconds, from 1 to 86400. Default: `2`. |
 | `-n COUNT` | Number of monitoring cycles, at least 1. If omitted, procmon runs until stopped. |
 | `-o FILE` | Write measurements to `FILE` instead of stdout. The file is opened in append mode. |
+| `-c` | Output CSV instead of a table (see [CSV output](#csv-output--c)). |
 | `-h` | Show help and exit. |
 
 Notes:
@@ -142,6 +146,30 @@ Measurements go to stdout (or the `-o` file). Warnings and errors, such as
 "process terminated", go to **stderr**, so the measurement output stays clean
 and machine-readable. When writing to a file, procmon flushes it after every
 cycle, so `tail -f` shows new rows immediately.
+
+### CSV output (`-c`)
+
+With `-c` the same measurements are written as CSV, for use in spreadsheets or
+scripts. This works for both stdout and `-o`:
+
+```
+$ ./procmon -p 1,6808 -i 1 -n 2 -c
+timestamp,pid,name,cpu_percent,memory_mb,uptime_s
+2026-11-17 18:26:35,1,systemd,,16.5,7265
+2026-11-17 18:26:35,6808,sleep,,8.0,0
+2026-11-17 18:26:36,1,systemd,0.0,16.5,7266
+2026-11-17 18:26:36,6808,sleep,0.0,8.0,1
+```
+
+The format is chosen to be easy to process:
+
+- `cpu_percent` is **empty** (not `N/A`) when no value is available yet, so
+  tools read it as a missing number rather than text.
+- `uptime_s` is the uptime in whole **seconds** instead of `HH:MM:SS`.
+- No padding, and the full process name is written (not truncated).
+- Fields are quoted according to RFC 4180: a name that contains a comma, a
+  double quote or a newline is wrapped in `"..."`, with inner quotes doubled
+  (`a,b` becomes `"a,b"`).
 
 ## How the values are calculated
 
@@ -219,6 +247,7 @@ garbage values. These cases are covered by the unit tests.
 | PID does not exist | `PID N: no such process`; other PIDs keep being monitored |
 | `/proc` entry not readable | `PID N: permission denied`; other PIDs keep being monitored |
 | Process exits during monitoring | `PID N: process terminated, no longer monitored`; others continue |
+| PID reused by a new process between cycles | Detected via `starttime`; reported as terminated, no longer monitored |
 | All monitored processes have exited | Message, then a clean exit with code 0 |
 | None of the PIDs could be read at start | Message, exit code 1 |
 | Output file cannot be created/opened | e.g. `out.log: Permission denied`, exit code 1 |
@@ -226,7 +255,6 @@ garbage values. These cases are covered by the unit tests.
 | Memory allocation failure | Reported with `perror`, exit code 1 |
 | `/proc/uptime` or clock unavailable | Error message, exit code 1 |
 | `SIGINT` / `SIGTERM` | Graceful shutdown (see below) |
-| PID reused by a new process between cycles | Detected via `starttime`; reported as terminated, no longer monitored |
 
 All of these paths go through a single cleanup section at the end of `main`,
 which closes the output file and frees all memory. This means no path leaks
@@ -394,6 +422,13 @@ Summary:
 | 9 | Inaccessible output file | Non-existent directory, `/root/…` as a normal user, read-only file | `No such file or directory` / `Permission denied`. Exit 1 ✅ |
 | 10 | Multiple PIDs, one terminates | `sleep 60` + `sleep 2`, `-i 1 -n 5` | `process terminated` for the short one; the other keeps being monitored for all 5 cycles. Exit 0 ✅ |
 
+### Optional feature: CSV output
+
+The scenario script also tests `-c` (end of [`tests/results.txt`](tests/results.txt)):
+CSV output for several processes, an empty `cpu_percent` on the first cycle,
+correct quoting of a process whose name contains a comma (`"a,b"`), and that
+the output parses back into 6 fields per row with Python's `csv` module.
+
 ### Memory checks
 
 All scenarios were also run under valgrind
@@ -425,7 +460,7 @@ The service was tested manually on the VM following the steps in
   The interval is at least 1 second.
 - **CPU % is per core**, so it can exceed 100% for multithreaded processes on
   multi-core systems. This is the same convention `top` uses.
-- - **PID reuse** is detected by comparing each process's `starttime` between
+- **PID reuse** is detected by comparing each process's `starttime` between
   cycles. If it changes, the original process has exited and its PID now
   belongs to a different process, so it is reported as terminated. This case
   can't be triggered on demand (the kernel cycles through all PIDs before
@@ -468,3 +503,11 @@ procmon/
 ├── Makefile
 └── README.md
 ```
+
+## Use of AI assistance
+
+The application code in `src/` was written by me. An AI assistant (Claude) was
+used as a reviewer and tutor while writing it. The unit tests
+(`tests/test_proc.c`), the test scenario script (`tests/run_scenarios.sh`),
+the systemd unit and configuration, and this README were written with the help
+of the AI assistant and then reviewed and tested by me.

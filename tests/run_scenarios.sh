@@ -143,6 +143,26 @@ spawn sleep 60;  LONG=$LAST
 spawn sleep 2;   SHORT=$LAST
 run -p "$LONG,$SHORT" -i 1 -n 5
 
+# ---------------------------------------------------------------------------
+echo
+echo "=================================================================="
+echo "Optional feature: CSV output (-c)"
+echo "=================================================================="
+spawn sleep 60
+run -p "1,$LAST" -i 1 -n 2 -c
+echo
+echo "# A process name containing a comma is quoted (RFC 4180)"
+# (the shell renames itself by writing to /proc/self/comm, then just waits)
+spawn sh -c 'printf "a,b" > /proc/$$/comm; while :; do sleep 1; done'
+sleep 0.3
+run -p "$LAST" -n 1 -c
+if command -v python3 > /dev/null; then
+    echo
+    echo "# Parsed back with Python's csv module (6 fields per row):"
+    $PROCMON -p "1,$LAST" -n 1 -c 2>/dev/null \
+        | python3 -c "import csv,sys; [print(r) for r in csv.reader(sys.stdin)]"
+fi
+
 echo
 echo "=================================================================="
 echo "All scenarios finished."
