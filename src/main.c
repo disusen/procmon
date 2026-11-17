@@ -24,6 +24,7 @@ struct monitored {
     int have_prev;                    /* 0 until first sample -> CPU% shown as N/A */
     unsigned long long prev_ticks;    /* utime + stime from the previous cycle */
     double prev_time;                 /* monotonic time of that sample, in seconds */
+    unsigned long long starttime;     /* identifies the process; changes if the PID is reused */
 };
 
 /* Set by the SIGINT/SIGTERM handler, checked by the main loop.
@@ -246,6 +247,15 @@ int main(int argc, char *argv[])
                 mons[i].alive = 0;
                 continue;
             }
+
+            if (mons[i].have_prev && s.starttime != mons[i].starttime) {
+                /* same PID, different start time: the original process exited and the
+                * kernel reused its PID for a new one */
+                fprintf(stderr, "PID %d: process terminated (PID reused by another process), no longer monitored\n", (int)mons[i].pid);
+                mons[i].alive = 0;
+                continue;
+            }
+            mons[i].starttime = s.starttime;
 
             unsigned long long ticks = s.utime + s.stime;
 

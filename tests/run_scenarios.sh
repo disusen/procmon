@@ -4,7 +4,6 @@
 # one, the exact command, everything procmon printed (stdout + stderr) and its
 # exit code.
 #
-#
 # Usage (from the repository root, as a normal non-root user):
 #   ./tests/run_scenarios.sh                    # print to the terminal
 #   ./tests/run_scenarios.sh | tee tests/results.txt

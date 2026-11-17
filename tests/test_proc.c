@@ -1,9 +1,6 @@
 /*
  * Unit tests for the /proc parsing in src/proc.c.
  *
- * Note: this test file was written with the help of an AI assistant (Claude).
- * The application code in src/ was written by the author.
- *
  * Build and run with:  make test
  */
 #include <stdio.h>
