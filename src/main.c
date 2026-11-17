@@ -16,6 +16,7 @@ struct config {
     long count;          // -1 = run forever
     const char *outfile; // NULL = stdout
     int csv;
+    const char *names; // -N argument: comma-separated process names, NULL if not given
 };
 
 /* State kept for each monitored PID across cycles */
@@ -42,13 +43,15 @@ static void on_stop_signal(int sig)
 static void print_usage(FILE *out, const char *prog)
 {
     fprintf(out,
-        "Usage: %s -p PID[,PID...] [-i SEC] [-n COUNT] [-o FILE] [-h] [-c]\n"
-        "  -p PID[,PID...]  process IDs to monitor (required)\n"
-        "  -i SEC           interval in seconds (default: 2)\n"
-        "  -n COUNT         number of cycles (default: until stopped)\n"
-        "  -o FILE          write output to FILE instead of stdout\n"
-        "  -h               show this help\n"
-        "  -c               CSV output instead of a table\n", prog);
+        "Usage: %s [-p PID[,PID...]] [-N NAME[,NAME...]] [-i SEC] [-n COUNT] [-o FILE] [-c] [-h]\n"
+        "  At least one of -p or -N is required.\n"
+        "  -p PID[,PID...]    process IDs to monitor\n"
+        "  -N NAME[,NAME...]  monitor all processes with these names (as shown by ps, max 15 chars)\n"
+        "  -i SEC             interval in seconds (default: 2)\n"
+        "  -n COUNT           number of cycles (default: until stopped)\n"
+        "  -o FILE            write output to FILE instead of stdout\n"
+        "  -c                 CSV output instead of a table\n"
+        "  -h                 show this help\n", prog);
 }
 
 static int parse_long(const char *s, long min, long max, long *out)
@@ -113,6 +116,51 @@ static int parse_pids(const char *arg, struct config *cfg)
     return 0;
 }
 
+/* For each comma-separated name in arg, find matching processes and append
+ * their PIDs to cfg->pids. Returns 0 on success, -1 on error (allocation). */
+static int add_pids_by_names(const char *arg, struct config *cfg)
+{
+    /* 1. Copy arg with strdup (check NULL -> perror, return -1),
+     *    because you'll cut it at the commas, same as parse_pids. */
+    char *copy = strdup(arg);
+    if (!copy) {
+        perror("strdup");
+        return -1;
+    }
+
+    /* 2. The array may already contain PIDs from -p. find_pids_by_name needs to know
+     *    its capacity; parse_pids allocated exactly npids entries, so: */
+    size_t cap = cfg->npids;
+
+    /* 3. Split at commas exactly like in parse_pids (tok / strchr / '\0'). */
+    char *tok = copy;
+    while (tok) {
+        char *comma = strchr(tok, ',');
+        if (comma)
+            *comma = '\0';
+
+        if (tok[0] != '\0') {
+            if (strlen(tok) > 15)
+                fprintf(stderr, "warning: process names are at most 15 characters: '%s'\n", tok);
+
+            int found = find_pids_by_name(tok, &cfg->pids, &cfg->npids, &cap);
+            if (found < 0) {
+                perror("find_pids_by_name");
+                free(copy);
+                return -1;
+            }
+            if (found == 0)
+                fprintf(stderr, "warning: no process named '%s'\n", tok);
+        }
+
+        tok = comma ? comma + 1 : NULL;
+    }
+
+    /* 4. free(copy); return 0; */
+    free(copy);
+    return 0;
+}
+
 static void fprint_csv_field(FILE *f, const char *s)
 {
     /* 1. If s contains none of , " \n  -> just write it as is and return. */
@@ -139,13 +187,13 @@ static void fprint_csv_field(FILE *f, const char *s)
 
 int main(int argc, char *argv[])
 {
-    struct config cfg = { NULL, 0, 2, -1, NULL, 0 };
+    struct config cfg = { NULL, 0, 2, -1, NULL, 0, NULL };
     struct monitored *mons = NULL;
     FILE *outf = stdout;    
     int opt;
     int rc = 1; // return code
 
-    while ((opt = getopt(argc, argv, "p:i:n:o:hc")) != -1) {
+    while ((opt = getopt(argc, argv, "p:i:n:o:hcN:")) != -1) {
         switch (opt) {
             case 'p':
                 if (cfg.pids != NULL) {
@@ -178,6 +226,9 @@ int main(int argc, char *argv[])
             case 'c':
                 cfg.csv = 1;
                 break;
+            case 'N':
+                cfg.names = optarg;      /* resolved after option parsing */
+                break;
             default:
                 print_usage(stderr, argv[0]);
                 goto out;
@@ -190,9 +241,29 @@ int main(int argc, char *argv[])
         goto out;
     }
 
+    if (cfg.names && add_pids_by_names(cfg.names, &cfg) != 0)
+        goto out;
+
+    /* Remove duplicate PIDs (e.g. given with -p and also found by -N).
+     * k = number of unique PIDs kept so far; each PID is kept only if
+     * it isn't already among the first k. */
+    size_t k = 0;
+    for (size_t i = 0; i < cfg.npids; i++) {
+        size_t j = 0;
+        while (j < k && cfg.pids[j] != cfg.pids[i])
+            j++;
+        if (j == k)                      /* not seen before */
+            cfg.pids[k++] = cfg.pids[i];
+    }
+    cfg.npids = k;
+
     if (cfg.npids == 0) {
-        fprintf(stderr, "Missing required option -p\n");
-        print_usage(stderr, argv[0]);
+        if (cfg.names) {
+            fprintf(stderr, "No matching processes found to monitor\n");
+        } else {
+            fprintf(stderr, "Missing required option -p or -N\n");
+            print_usage(stderr, argv[0]);
+        }
         goto out;
     }
 

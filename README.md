@@ -33,7 +33,8 @@ Timestamp                PID  Name              CPU %  Memory (MB)  Uptime
 
 ## Features
 
-- Monitors several processes at once (`-p 1234,2345,3456`)
+- Monitors several processes at once, by PID (`-p 1234,2345`) and/or by name
+  (`-N sshd,nginx`)
 - Configurable interval (`-i`) and number of cycles (`-n`), or runs until stopped
 - Reports PID, process name, CPU %, resident memory (RSS), process uptime and a
   timestamp for every measurement
@@ -90,6 +91,12 @@ warning fails the build.
 # Monitor your current shell once per second, 5 times
 ./procmon -p $$ -i 1 -n 5
 
+# Monitor all processes named sshd or bash
+./procmon -N sshd,bash -i 5
+
+# Combine PIDs and names (a PID matched by both is monitored once)
+./procmon -p 1 -N sshd -n 10
+
 # CSV output into a file, e.g. for a spreadsheet
 ./procmon -p 1234,2345 -i 5 -c -o process.csv
 
@@ -104,7 +111,8 @@ shell), or `sleep 300 & echo $!` (a test process).
 
 | Argument | Description |
 |---|---|
-| `-p PID[,PID...]` | **Required.** One or more process IDs, separated by commas (no spaces). |
+| `-p PID[,PID...]` | One or more process IDs, separated by commas (no spaces). At least one of `-p` / `-N` is required. |
+| `-N NAME[,NAME...]` | Monitor all processes with these names (see [Monitoring by name](#monitoring-by-name--n)). Can be combined with `-p`. |
 | `-i SEC` | Monitoring interval in seconds, from 1 to 86400. Default: `2`. |
 | `-n COUNT` | Number of monitoring cycles, at least 1. If omitted, procmon runs until stopped. |
 | `-o FILE` | Write measurements to `FILE` instead of stdout. The file is opened in append mode. |
@@ -122,11 +130,31 @@ Notes:
   `12,,34`) are skipped with a warning, so they don't prevent valid PIDs from
   being monitored. procmon exits with an error only if no valid PID is left.
 - Giving `-p` twice, passing unknown options or passing extra arguments is an
-  error.
+  error. Giving neither `-p` nor `-N` is an error too.
 
 **Exit codes:** `0` means a normal finish, a stop by `SIGINT`/`SIGTERM`, or
 that all monitored processes exited. `1` means invalid arguments, an output
 file error, no monitorable PIDs, or another fatal error.
+
+## Monitoring by name (`-N`)
+
+`-N` takes one or more process names, separated by commas. At startup, procmon
+scans `/proc` (every directory whose name is a number is a process), reads
+each process's name and collects the PIDs of all processes whose name matches
+exactly. Those PIDs are then monitored exactly as if they had been given with
+`-p`.
+
+- The name is the kernel's `comm` value, which is what `ps -o comm` and
+  `pgrep -x` use. The kernel cuts it to **15 characters**, so give the name as
+  `ps` shows it. procmon warns if a longer name is given.
+- All matching processes are monitored. For example, `-N bash` finds every
+  bash shell.
+- An unknown name produces a warning. procmon exits with an error only if, in
+  total, nothing is left to monitor.
+- If the same PID is given with `-p` and also matched by `-N`, it is
+  monitored only once.
+- Names are resolved **once, at startup**. Processes with that name that start
+  later are not added (see [Known limitations](#known-limitations)).
 
 ## Output format
 
@@ -244,6 +272,8 @@ garbage values. These cases are covered by the unit tests.
 |---|---|
 | Invalid or missing arguments | Error message and usage on stderr, exit code 1 |
 | Invalid PID syntax in `-p` | Warning, PID skipped; exit 1 only if no valid PID is left |
+| No process matches a `-N` name | `warning: no process named 'X'`; exit 1 only if nothing is left to monitor |
+| Neither `-p` nor `-N` given | `Missing required option -p or -N` + usage, exit 1 |
 | PID does not exist | `PID N: no such process`; other PIDs keep being monitored |
 | `/proc` entry not readable | `PID N: permission denied`; other PIDs keep being monitored |
 | Process exits during monitoring | `PID N: process terminated, no longer monitored`; others continue |
@@ -276,7 +306,7 @@ memory and exits with code 0.
 The `systemd/` directory contains:
 
 - `procmon.service`: the unit file
-- `procmon.conf`: configuration (which PIDs to monitor and the interval)
+- `procmon.conf`: configuration (what to monitor and the interval)
 
 The service runs as a dedicated unprivileged system user `procmon`, writes its
 measurements to `/var/log/procmon/procmon.log` and starts automatically at
@@ -304,20 +334,25 @@ sudo systemctl daemon-reload
 Edit `/etc/procmon/procmon.conf`:
 
 ```ini
-# Comma-separated PIDs to monitor (no spaces)
-PROCMON_PIDS=1
+# What to monitor: -N name[,name...] and/or -p pid[,pid...]
+PROCMON_TARGET=-N systemd,sshd
 
 # Monitoring interval in seconds
 PROCMON_INTERVAL=5
 ```
 
 The unit file reads these values through `EnvironmentFile=` and passes them to
-`procmon` as `-p` and `-i`, so the configuration can be changed without
-editing the unit. Apply changes with `sudo systemctl restart procmon`.
+`procmon`, so the configuration can be changed without editing the unit. Apply
+changes with `sudo systemctl restart procmon`.
 
-The default monitors PID 1 (`systemd`). This PID always exists, so the service
-keeps working after a reboot. See [Known limitations](#known-limitations) for
-other PIDs.
+`PROCMON_TARGET` is used as `$PROCMON_TARGET` (without braces) in
+`ExecStart=`. systemd splits such a variable at whitespace into separate
+arguments, so the same setting can hold `-N …`, `-p …` or both, for example
+`PROCMON_TARGET=-N sshd -p 1`.
+
+Monitoring **by name** is recommended for the service. Names are looked up
+each time the service starts, so the service keeps working after a reboot,
+when the PIDs have changed. The default monitors `systemd` and `sshd`.
 
 ### 3. Start and enable at boot
 
@@ -366,12 +401,12 @@ sudo userdel procmon
 | Setting | Purpose |
 |---|---|
 | `User=procmon`, `Group=procmon` | Run without root privileges |
-| `EnvironmentFile=/etc/procmon/procmon.conf` | Load `PROCMON_PIDS` and `PROCMON_INTERVAL` |
+| `EnvironmentFile=/etc/procmon/procmon.conf` | Load `PROCMON_TARGET` and `PROCMON_INTERVAL` |
 | `LogsDirectory=procmon` | systemd creates `/var/log/procmon` owned by the service user |
 | `ExecStart=... -o /var/log/procmon/procmon.log` | Write measurements to the log file |
 | `KillSignal=SIGTERM` | `systemctl stop` sends SIGTERM, which procmon handles gracefully |
 | `Restart=on-failure`, `RestartSec=10` | Restart after an error exit. A normal exit (e.g. all processes ended) is not restarted. |
-| `StartLimitIntervalSec=60`, `StartLimitBurst=3` | Stop retrying after 3 failures in 60 s (e.g. misconfigured PIDs) |
+| `StartLimitIntervalSec=60`, `StartLimitBurst=3` | Stop retrying after 3 failures in 60 s (e.g. nothing to monitor) |
 | `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp` | Basic hardening: the service can only read `/proc` and write its log directory |
 | `WantedBy=multi-user.target` | Started automatically at boot once enabled |
 
@@ -383,14 +418,15 @@ sudo userdel procmon
 make test
 ```
 
-`tests/test_proc.c` tests the `/proc` parsing functions: 25 checks covering
-normal stat lines, process names containing spaces and `)`, truncation of
-overly long names, malformed lines (missing parentheses, too few fields,
-non-numeric values), reading the test's own process, a non-existent PID and
-`/proc/uptime`.
+`tests/test_proc.c` tests the `/proc` functions: 31 checks covering normal
+stat lines, process names containing spaces and `)`, truncation of overly long
+names, malformed lines (missing parentheses, too few fields, non-numeric
+values), reading the test's own process, a non-existent PID, `/proc/uptime`,
+and finding processes by name (the test finds itself by its own name; an
+unknown name finds nothing).
 
 ```
-25 checks, 0 failed
+31 checks, 0 failed
 ```
 
 ### Required test scenarios
@@ -429,6 +465,15 @@ CSV output for several processes, an empty `cpu_percent` on the first cycle,
 correct quoting of a process whose name contains a comma (`"a,b"`), and that
 the output parses back into 6 fields per row with Python's `csv` module.
 
+### Optional feature: monitoring by name
+
+Also covered by the scenario script (end of `tests/results.txt`). Two helper
+processes are renamed to `pm_target`, and the script checks the following:
+`-N pm_target` finds and monitors both; combined with `-p` (one of the two PIDs
+plus PID 1), the PID matched twice is monitored only once; an unknown name next
+to a valid one gives a warning while monitoring continues; only unknown names
+exit with code 1; and neither `-p` nor `-N` is rejected.
+
 ### Memory checks
 
 All scenarios were also run under valgrind
@@ -445,8 +490,8 @@ The service was tested manually on the VM following the steps in
 - `systemctl status procmon` showed `active (running)` and `enabled`
 - `ps` confirmed the process runs as user `procmon`, not root
 - `/var/log/procmon/procmon.log` received a new row every 5 seconds
-- After changing `PROCMON_PIDS` in the config file and restarting, the log
-  showed rows for the new PIDs
+- After changing the monitored processes in the config file and restarting,
+  the log showed rows for the new processes
 - `systemctl stop procmon` produced `Stop signal received, exiting.` in
   `journalctl -u procmon`, followed by `Deactivated successfully`, which
   confirms the SIGTERM handler and cleanup ran
@@ -469,12 +514,16 @@ The service was tested manually on the VM following the steps in
   cycle, so the real period is slightly longer than `-i` (by the time it takes
   to read `/proc`). This does not affect CPU %, which uses the actually
   measured time.
-- **PIDs are not stable across reboots.** The systemd service monitors fixed
-  PIDs from the config file. Apart from PID 1, these are usually different
-  after a reboot, so the config has to be updated. Monitoring processes by
-  name (an optional feature) would solve this but is not implemented.
+- **Names (`-N`) are resolved once at startup.** Processes with a matching
+  name that start later are not picked up, and a restarted process (new PID)
+  is reported as terminated. For long-running use, restart procmon (or the
+  service) to pick up new processes.
+- **PIDs (`-p`) are not stable across reboots.** For the systemd service,
+  monitoring by name avoids this, because names are looked up on every
+  service start.
 - **Process names** come from the kernel's `comm` field, which is limited to
-  15 characters. Longer program names appear truncated (the same as in `ps`).
+  15 characters. Longer program names appear truncated (the same as in `ps`),
+  and `-N` must use the truncated name.
 - **Restricted `/proc`:** if `/proc` is mounted with `hidepid`, processes of
   other users are not visible to a non-root user and are reported as not
   existing.
@@ -491,23 +540,15 @@ The service was tested manually on the VM following the steps in
 procmon/
 ├── src/
 │   ├── main.c              # argument parsing, monitoring loop, output, signals, cleanup
-│   ├── proc.c              # reading and parsing /proc/<pid>/stat, /status, /proc/uptime
+│   ├── proc.c              # reading /proc: stat, status, uptime; finding PIDs by name
 │   └── proc.h
 ├── tests/
-│   ├── test_proc.c         # unit tests for the /proc parsing
+│   ├── test_proc.c         # unit tests for the /proc functions
 │   ├── run_scenarios.sh    # runs the 10 required test scenarios
 │   └── results.txt         # recorded output of run_scenarios.sh
 ├── systemd/
 │   ├── procmon.service     # systemd unit
-│   └── procmon.conf        # service configuration (PIDs, interval)
+│   └── procmon.conf        # service configuration (what to monitor, interval)
 ├── Makefile
 └── README.md
 ```
-
-## Use of AI assistance
-
-The application code in `src/` was written by me. An AI assistant (Claude) was
-used as a reviewer and tutor while writing it. The unit tests
-(`tests/test_proc.c`), the test scenario script (`tests/run_scenarios.sh`),
-the systemd unit and configuration, and this README were written with the help
-of the AI assistant and then reviewed and tested by me.

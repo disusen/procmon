@@ -163,6 +163,30 @@ if command -v python3 > /dev/null; then
         | python3 -c "import csv,sys; [print(r) for r in csv.reader(sys.stdin)]"
 fi
 
+# ---------------------------------------------------------------------------
+echo
+echo "=================================================================="
+echo "Optional feature: monitor processes by name (-N)"
+echo "=================================================================="
+# two helper processes renamed to "pm_target" (via /proc/self/comm)
+spawn sh -c 'printf pm_target > /proc/$$/comm; while :; do sleep 1; done'; T1=$LAST
+spawn sh -c 'printf pm_target > /proc/$$/comm; while :; do sleep 1; done'; T2=$LAST
+sleep 0.3
+echo "# helper PIDs: $T1 $T2"
+run -N pm_target -i 1 -n 2
+echo
+echo "# -p and -N combined; a PID found by both is monitored only once"
+run -p "1,$T1" -N pm_target -n 1
+echo
+echo "# Unknown name mixed with a valid one: warning, valid one still monitored"
+run -N no_such_proc,pm_target -n 1
+echo
+echo "# Only unknown names: nothing to monitor"
+run -N no_such_proc -n 1
+echo
+echo "# Neither -p nor -N"
+run -n 1
+
 echo
 echo "=================================================================="
 echo "All scenarios finished."

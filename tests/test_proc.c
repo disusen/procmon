@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <stdlib.h>
 
 #include "proc.h"
 
@@ -101,6 +102,34 @@ static void test_read_nonexistent_process(void)
     CHECK(proc_read((pid_t)INT_MAX, &s) == -1);
 }
 
+static void test_find_own_process_by_name(void)
+{
+    struct proc_sample s;
+    pid_t *pids = NULL;
+    size_t count = 0, cap = 0;
+    int found_self = 0;
+
+    /* Look up our own name, then search for it: our PID must be among the results. */
+    CHECK(proc_read(getpid(), &s) == 0);
+    CHECK(find_pids_by_name(s.name, &pids, &count, &cap) >= 1);
+    for (size_t i = 0; i < count; i++)
+        if (pids[i] == getpid())
+            found_self = 1;
+    CHECK(found_self);
+    CHECK(cap >= count);
+    free(pids);
+}
+
+static void test_find_nonexistent_name(void)
+{
+    pid_t *pids = NULL;
+    size_t count = 0, cap = 0;
+
+    CHECK(find_pids_by_name("no_such_proc_x", &pids, &count, &cap) == 0);
+    CHECK(count == 0);
+    free(pids);
+}
+
 static void test_system_uptime(void)
 {
     double up = -1.0;
@@ -117,6 +146,8 @@ int main(void)
     test_malformed_lines();
     test_read_own_process();
     test_read_nonexistent_process();
+    test_find_own_process_by_name();
+    test_find_nonexistent_name();
     test_system_uptime();
 
     printf("%d checks, %d failed\n", tests_run, tests_failed);
