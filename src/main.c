@@ -1,23 +1,13 @@
-#include <stdio.h>      // printf, fprintf, fopen, fclose, fgets, perror
-#include <unistd.h>     // getopt, optarg, optind, sleep, sysconf
-#include <stdlib.h>     // strtol, malloc, calloc, free
-#include <errno.h>      // errno, ERANGE, EACCES
-#include <limits.h>     // LONG_MAX, INT_MAX
-#include <sys/types.h>  // pid_t
-#include <string.h>     // strdup, strchr, memset
+#include <stdio.h>      // fprintf, fopen, fclose, fflush, perror
+#include <unistd.h>     // sleep, sysconf
+#include <stdlib.h>     // calloc, free
+#include <errno.h>      // errno, EACCES
+#include <string.h>     // memset
 #include <time.h>       // time, localtime_r, strftime, clock_gettime
 #include <signal.h>     // sigaction, SIGINT, SIGTERM, sig_atomic_t
+#include "args.h"       // struct config, parse_args
+#include "output.h"     // print_header, print_row
 #include "proc.h"       // proc_read, read_system_uptime, struct proc_sample
-
-struct config {
-    pid_t *pids;
-    size_t npids;
-    long interval;
-    long count;          // -1 = run forever
-    const char *outfile; // NULL = stdout
-    int csv;
-    const char *names; // -N argument: comma-separated process names, NULL if not given
-};
 
 /* State kept for each monitored PID across cycles */
 struct monitored {
@@ -40,232 +30,20 @@ static void on_stop_signal(int sig)
     stop = 1;    /* only set a flag: printf/free/fclose are not safe inside a handler */
 }
 
-static void print_usage(FILE *out, const char *prog)
-{
-    fprintf(out,
-        "Usage: %s [-p PID[,PID...]] [-N NAME[,NAME...]] [-i SEC] [-n COUNT] [-o FILE] [-c] [-h]\n"
-        "  At least one of -p or -N is required.\n"
-        "  -p PID[,PID...]    process IDs to monitor\n"
-        "  -N NAME[,NAME...]  monitor all processes with these names (as shown by ps, max 15 chars)\n"
-        "  -i SEC             interval in seconds (default: 2)\n"
-        "  -n COUNT           number of cycles (default: until stopped)\n"
-        "  -o FILE            write output to FILE instead of stdout\n"
-        "  -c                 CSV output instead of a table\n"
-        "  -h                 show this help\n", prog);
-}
-
-static int parse_long(const char *s, long min, long max, long *out)
-{
-    errno = 0;
-    char *end;
-    long v = strtol(s, &end, 10);
-
-    if (end == s || *end != '\0' || errno == ERANGE || v < min || v > max)
-        return -1;
-
-    *out = v;
-    return 0;
-}
-
-static int parse_pids(const char *arg, struct config *cfg)
-{
-    char *copy = strdup(arg);
-    if (!copy){
-        perror("strdup");
-        return -1;
-    }
-
-    size_t commas = 0;
-    for (const char *p = copy; *p; p++)
-        if (*p == ',')
-            commas++;
-
-    cfg->pids = malloc((commas + 1) * sizeof(pid_t));
-    if (!cfg->pids) {
-        perror("malloc");
-        free(copy);
-        return -1;
-    }
-
-    char *tok = copy;
-    while (tok) {
-        char *comma = strchr(tok, ',');
-        if (comma)
-            *comma = '\0';
-
-        long v;
-        if (parse_long(tok, 1, INT_MAX, &v) == 0) {
-            cfg->pids[cfg->npids++] = (pid_t)v;
-        } else if (tok[0] != '\0') {
-            fprintf(stderr, "warning: invalid PID skipped: %s\n", tok);
-        }
-
-        if (!comma)
-            break;
-        tok = comma + 1;
-    }
-
-    free(copy);
-
-    if (cfg->npids == 0) {
-        fprintf(stderr, "No valid PIDs given\n");
-        free(cfg->pids);
-        cfg->pids = NULL;
-        return -1;
-    }
-    return 0;
-}
-
-/* For each comma-separated name in arg, find matching processes and append
- * their PIDs to cfg->pids. Returns 0 on success, -1 on error (allocation). */
-static int add_pids_by_names(const char *arg, struct config *cfg)
-{
-    /* 1. Copy arg with strdup (check NULL -> perror, return -1),
-     *    because you'll cut it at the commas, same as parse_pids. */
-    char *copy = strdup(arg);
-    if (!copy) {
-        perror("strdup");
-        return -1;
-    }
-
-    /* 2. The array may already contain PIDs from -p. find_pids_by_name needs to know
-     *    its capacity; parse_pids allocated exactly npids entries, so: */
-    size_t cap = cfg->npids;
-
-    /* 3. Split at commas exactly like in parse_pids (tok / strchr / '\0'). */
-    char *tok = copy;
-    while (tok) {
-        char *comma = strchr(tok, ',');
-        if (comma)
-            *comma = '\0';
-
-        if (tok[0] != '\0') {
-            if (strlen(tok) > 15)
-                fprintf(stderr, "warning: process names are at most 15 characters: '%s'\n", tok);
-
-            int found = find_pids_by_name(tok, &cfg->pids, &cfg->npids, &cap);
-            if (found < 0) {
-                perror("find_pids_by_name");
-                free(copy);
-                return -1;
-            }
-            if (found == 0)
-                fprintf(stderr, "warning: no process named '%s'\n", tok);
-        }
-
-        tok = comma ? comma + 1 : NULL;
-    }
-
-    /* 4. free(copy); return 0; */
-    free(copy);
-    return 0;
-}
-
-static void fprint_csv_field(FILE *f, const char *s)
-{
-    /* 1. If s contains none of , " \n  -> just write it as is and return. */
-    if (strpbrk(s, ",\"\n") == NULL) {
-        fputs(s, f);
-        return;
-    }
-
-    /* 2. Otherwise: write an opening quote */
-    fputc('"', f);
-
-    /* 3. Loop over each character of s:
-     *      - write the character
-     *      - if it was '"', write it a second time */
-    for (const char *p = s; *p; p++) {
-        fputc(*p, f);
-        if (*p == '"')
-            fputc('"', f);
-    }
-
-    /* 4. Write the closing quote */
-    fputc('"', f);
-}
-
 int main(int argc, char *argv[])
 {
-    struct config cfg = { NULL, 0, 2, -1, NULL, 0, NULL };
+    struct config cfg = { 0 };
     struct monitored *mons = NULL;
-    FILE *outf = stdout;    
-    int opt;
+    FILE *outf = stdout;
     int rc = 1; // return code
 
-    while ((opt = getopt(argc, argv, "p:i:n:o:hcN:")) != -1) {
-        switch (opt) {
-            case 'p':
-                if (cfg.pids != NULL) {
-                    fprintf(stderr, "option -p given more than once\n");
-                    goto out;
-                }
-                if (parse_pids(optarg, &cfg) != 0) {
-                    goto out;
-                }
-                break;
-            case 'i':
-                if (parse_long(optarg, 1, 86400, &cfg.interval) != 0) {
-                    fprintf(stderr, "Invalid interval: %s\n", optarg);
-                    goto out;
-                }
-                break;
-            case 'n':
-                if (parse_long(optarg, 1, LONG_MAX, &cfg.count) != 0) {
-                    fprintf(stderr, "Invalid count: %s\n", optarg);
-                    goto out;
-                }
-                break;
-            case 'o':
-                cfg.outfile = optarg;
-                break;
-            case 'h':
-                print_usage(stdout, argv[0]);
-                rc = 0; // help was requested, so exit code 0.
-                goto out;
-            case 'c':
-                cfg.csv = 1;
-                break;
-            case 'N':
-                cfg.names = optarg;      /* resolved after option parsing */
-                break;
-            default:
-                print_usage(stderr, argv[0]);
-                goto out;
-        }
-    }
-
-    if (optind < argc) {
-        fprintf(stderr, "%s: unexpected argument: %s\n", argv[0], argv[optind]);
-        print_usage(stderr, argv[0]);
+    int a = parse_args(argc, argv, &cfg);
+    if (a == ARGS_EXIT) {
+        rc = 0;                         /* e.g. -h: not an error */
         goto out;
     }
-
-    if (cfg.names && add_pids_by_names(cfg.names, &cfg) != 0)
-        goto out;
-
-    /* Remove duplicate PIDs (e.g. given with -p and also found by -N).
-     * k = number of unique PIDs kept so far; each PID is kept only if
-     * it isn't already among the first k. */
-    size_t k = 0;
-    for (size_t i = 0; i < cfg.npids; i++) {
-        size_t j = 0;
-        while (j < k && cfg.pids[j] != cfg.pids[i])
-            j++;
-        if (j == k)                      /* not seen before */
-            cfg.pids[k++] = cfg.pids[i];
-    }
-    cfg.npids = k;
-
-    if (cfg.npids == 0) {
-        if (cfg.names) {
-            fprintf(stderr, "No matching processes found to monitor\n");
-        } else {
-            fprintf(stderr, "Missing required option -p or -N\n");
-            print_usage(stderr, argv[0]);
-        }
-        goto out;
-    }
+    if (a == ARGS_ERROR)
+        goto out;                       /* message already printed, rc stays 1 */
 
     /* Open the output file if -o was given */
     if (cfg.outfile) {
@@ -294,12 +72,7 @@ int main(int argc, char *argv[])
         mons[i].alive = 1;
     }
 
-    /* print the header */
-    if (cfg.csv)
-        fprintf(outf, "timestamp,pid,name,cpu_percent,memory_mb,uptime_s\n");
-    else
-        fprintf(outf, "%-19s  %7s  %-15s  %6s  %11s  %s\n",
-                "Timestamp", "PID", "Name", "CPU %", "Memory (MB)", "Uptime");
+    print_header(outf, cfg.csv);
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -374,37 +147,15 @@ int main(int argc, char *argv[])
             mons[i].prev_time = now_mono;
             mons[i].have_prev = 1;
 
-            /* uptime */
+            /* uptime in seconds */
             long up = (long)(sys_up - s.starttime / (double)clk);
             if (up < 0)
                 up = 0;
-            long h = up / 3600;
-            long m = (up % 3600) / 60;
-            long sec = up % 60;
-            char up_str[32];
-            snprintf(up_str, sizeof up_str, "%02ld:%02ld:%02ld", h, m, sec);
 
             /* memory in MB */
             double mem_mb = s.rss_kb / 1024.0;
 
-            /* print the row */
-            if (cfg.csv) {
-                fprintf(outf, "%s,%d,", tstr, (int)mons[i].pid);
-                fprint_csv_field(outf, s.name);
-                if (cpu_valid)
-                    fprintf(outf, ",%.1f", cpu);
-                else
-                    fputs(",", outf);          /* empty field: no CPU value yet */
-                fprintf(outf, ",%.1f,%ld\n", mem_mb, up);
-            } else {
-                char cpu_str[16];
-                if (cpu_valid)
-                    snprintf(cpu_str, sizeof cpu_str, "%6.1f", cpu);
-                else
-                    snprintf(cpu_str, sizeof cpu_str, "%6s", "N/A");
-                fprintf(outf, "%-19s  %7d  %-15.15s  %s  %11.1f  %s\n",
-                        tstr, (int)mons[i].pid, s.name, cpu_str, mem_mb, up_str);
-            }
+            print_row(outf, cfg.csv, tstr, mons[i].pid, s.name, cpu_valid, cpu, mem_mb, up);
 
             alive_count++;
         }
@@ -436,7 +187,6 @@ int main(int argc, char *argv[])
     rc = 0;
 
 out:
-
     if (outf != stdout)
         fclose(outf);
     free(mons);

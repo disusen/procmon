@@ -539,9 +539,10 @@ The service was tested manually on the VM following the steps in
 ```
 procmon/
 ├── src/
-│   ├── main.c              # argument parsing, monitoring loop, output, signals, cleanup
-│   ├── proc.c              # reading /proc: stat, status, uptime; finding PIDs by name
-│   └── proc.h
+│   ├── main.c              # monitoring loop, CPU/uptime calculation, signals, cleanup
+│   ├── args.c / args.h     # command-line parsing, -N name lookup, duplicate removal
+│   ├── output.c / output.h # table and CSV formatting
+│   └── proc.c / proc.h     # reading /proc: stat, status, uptime; finding PIDs by name
 ├── tests/
 │   ├── test_proc.c         # unit tests for the /proc functions
 │   ├── run_scenarios.sh    # runs the 10 required test scenarios
