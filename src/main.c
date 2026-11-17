@@ -15,6 +15,7 @@ struct config {
     long interval;
     long count;          // -1 = run forever
     const char *outfile; // NULL = stdout
+    int csv;
 };
 
 /* State kept for each monitored PID across cycles */
@@ -41,12 +42,13 @@ static void on_stop_signal(int sig)
 static void print_usage(FILE *out, const char *prog)
 {
     fprintf(out,
-        "Usage: %s -p PID[,PID...] [-i SEC] [-n COUNT] [-o FILE] [-h]\n"
+        "Usage: %s -p PID[,PID...] [-i SEC] [-n COUNT] [-o FILE] [-h] [-c]\n"
         "  -p PID[,PID...]  process IDs to monitor (required)\n"
         "  -i SEC           interval in seconds (default: 2)\n"
         "  -n COUNT         number of cycles (default: until stopped)\n"
         "  -o FILE          write output to FILE instead of stdout\n"
-        "  -h               show this help\n", prog);
+        "  -h               show this help\n"
+        "  -c               CSV output instead of a table\n", prog);
 }
 
 static int parse_long(const char *s, long min, long max, long *out)
@@ -111,15 +113,39 @@ static int parse_pids(const char *arg, struct config *cfg)
     return 0;
 }
 
+static void fprint_csv_field(FILE *f, const char *s)
+{
+    /* 1. If s contains none of , " \n  -> just write it as is and return. */
+    if (strpbrk(s, ",\"\n") == NULL) {
+        fputs(s, f);
+        return;
+    }
+
+    /* 2. Otherwise: write an opening quote */
+    fputc('"', f);
+
+    /* 3. Loop over each character of s:
+     *      - write the character
+     *      - if it was '"', write it a second time */
+    for (const char *p = s; *p; p++) {
+        fputc(*p, f);
+        if (*p == '"')
+            fputc('"', f);
+    }
+
+    /* 4. Write the closing quote */
+    fputc('"', f);
+}
+
 int main(int argc, char *argv[])
 {
-    struct config cfg = { NULL, 0, 2, -1, NULL };
+    struct config cfg = { NULL, 0, 2, -1, NULL, 0 };
     struct monitored *mons = NULL;
     FILE *outf = stdout;    
     int opt;
     int rc = 1; // return code
 
-    while ((opt = getopt(argc, argv, "p:i:n:o:h")) != -1) {
+    while ((opt = getopt(argc, argv, "p:i:n:o:hc")) != -1) {
         switch (opt) {
             case 'p':
                 if (cfg.pids != NULL) {
@@ -149,6 +175,9 @@ int main(int argc, char *argv[])
                 print_usage(stdout, argv[0]);
                 rc = 0; // help was requested, so exit code 0.
                 goto out;
+            case 'c':
+                cfg.csv = 1;
+                break;
             default:
                 print_usage(stderr, argv[0]);
                 goto out;
@@ -195,8 +224,11 @@ int main(int argc, char *argv[])
     }
 
     /* print the header */
-    fprintf(outf, "%-19s  %7s  %-15s  %6s  %11s  %s\n",
-            "Timestamp", "PID", "Name", "CPU %", "Memory (MB)", "Uptime");
+    if (cfg.csv)
+        fprintf(outf, "timestamp,pid,name,cpu_percent,memory_mb,uptime_s\n");
+    else
+        fprintf(outf, "%-19s  %7s  %-15s  %6s  %11s  %s\n",
+                "Timestamp", "PID", "Name", "CPU %", "Memory (MB)", "Uptime");
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -249,8 +281,8 @@ int main(int argc, char *argv[])
             }
 
             if (mons[i].have_prev && s.starttime != mons[i].starttime) {
-                /* same PID, different start time: the original process exited and the
-                * kernel reused its PID for a new one */
+                // handles the following scenario:
+                // same PID, different start time: the original process exited and the kernel reused its PID for a new process
                 fprintf(stderr, "PID %d: process terminated (PID reused by another process), no longer monitored\n", (int)mons[i].pid);
                 mons[i].alive = 0;
                 continue;
@@ -260,12 +292,11 @@ int main(int argc, char *argv[])
             unsigned long long ticks = s.utime + s.stime;
 
             /* CPU % */
-            char cpu_str[16];
+            int cpu_valid = 0;
+            double cpu = 0.0;
             if (mons[i].have_prev && ticks >= mons[i].prev_ticks && now_mono > mons[i].prev_time) {
-                double cpu = (ticks - mons[i].prev_ticks) / (double)clk / (now_mono - mons[i].prev_time) * 100.0;
-                snprintf(cpu_str, sizeof cpu_str, "%6.1f", cpu);
-            } else {
-                snprintf(cpu_str, sizeof cpu_str, "%6s", "N/A");
+                cpu = (ticks - mons[i].prev_ticks) / (double)clk / (now_mono - mons[i].prev_time) * 100.0;
+                cpu_valid = 1;
             }
 
             mons[i].prev_ticks = ticks;
@@ -286,8 +317,23 @@ int main(int argc, char *argv[])
             double mem_mb = s.rss_kb / 1024.0;
 
             /* print the row */
-            fprintf(outf, "%-19s  %7d  %-15.15s  %s  %11.1f  %s\n",
-                    tstr, (int)mons[i].pid, s.name, cpu_str, mem_mb, up_str);
+            if (cfg.csv) {
+                fprintf(outf, "%s,%d,", tstr, (int)mons[i].pid);
+                fprint_csv_field(outf, s.name);
+                if (cpu_valid)
+                    fprintf(outf, ",%.1f", cpu);
+                else
+                    fputs(",", outf);          /* empty field: no CPU value yet */
+                fprintf(outf, ",%.1f,%ld\n", mem_mb, up);
+            } else {
+                char cpu_str[16];
+                if (cpu_valid)
+                    snprintf(cpu_str, sizeof cpu_str, "%6.1f", cpu);
+                else
+                    snprintf(cpu_str, sizeof cpu_str, "%6s", "N/A");
+                fprintf(outf, "%-19s  %7d  %-15.15s  %s  %11.1f  %s\n",
+                        tstr, (int)mons[i].pid, s.name, cpu_str, mem_mb, up_str);
+            }
 
             alive_count++;
         }
