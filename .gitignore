@@ -3,3 +3,4 @@ procmon
 *.d
 .vscode/
 tests/test_proc
+*.log
