@@ -1,6 +1,9 @@
 #include "proc.h"
 #include <stdio.h>
 #include <string.h>
+#include <dirent.h>     // opendir, readdir, closedir
+#include <stdlib.h>     // realloc, atoi
+#include <ctype.h>      // isdigit
 
 int parse_stat_line(const char *line, struct proc_sample *s)
 {
@@ -84,4 +87,62 @@ int read_system_uptime(double *out)
     int r = fscanf(f, "%lf", out);
     fclose(f);
     return (r == 1) ? 0 : -1;
+}
+
+#include <stdio.h>
+#include <string.h>
+#include <dirent.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <sys/types.h>
+
+/* Find all processes whose name (comm) equals name.
+ * Appends their PIDs to the dynamic array *pids (with *count entries, *cap capacity),
+ * growing it with realloc as needed. Returns the number of matches found, or -1 on error. */
+int find_pids_by_name(const char *name, pid_t **pids, size_t *count, size_t *cap)
+{
+    DIR *d = opendir("/proc");
+    if (!d)
+        return -1;
+
+    int matches = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        /* skip entries that aren't all digits */
+        const char *n = e->d_name;
+        int all_digits = 1;
+        for (const char *p = n; *p; p++) {
+            if (!isdigit((unsigned char)*p)) {
+                all_digits = 0;
+                break;
+            }
+        }
+        if (!all_digits || *n == '\0')
+            continue;
+
+        pid_t pid = (pid_t)atoi(n);
+
+        struct proc_sample s;
+        if (proc_read(pid, &s) != 0)
+            continue;
+
+        if (strcmp(s.name, name) == 0) {
+            /* grow array if needed */
+            if (*count == *cap) {
+                size_t new_cap = (*cap == 0) ? 8 : *cap * 2;
+                pid_t *tmp = realloc(*pids, new_cap * sizeof *tmp);
+                if (!tmp) {
+                    closedir(d);
+                    return -1;
+                }
+                *pids = tmp;
+                *cap = new_cap;
+            }
+            (*pids)[(*count)++] = pid;
+            matches++;
+        }
+    }
+
+    closedir(d);
+    return matches;
 }

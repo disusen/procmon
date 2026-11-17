@@ -23,4 +23,9 @@ int proc_read(pid_t pid, struct proc_sample *s);
 /* Seconds since boot, from /proc/uptime. Returns 0 on success, -1 on error. */
 int read_system_uptime(double *out);
 
+/* Find all processes whose name (comm) equals `name`.
+ * Appends their PIDs to the dynamic array *pids (with *count entries, *cap capacity),
+ * growing it with realloc as needed. Returns the number of matches found, or -1 on error. */
+int find_pids_by_name(const char *name, pid_t **pids, size_t *count, size_t *cap);
+
 #endif
