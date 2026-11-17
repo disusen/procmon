@@ -226,6 +226,7 @@ garbage values. These cases are covered by the unit tests.
 | Memory allocation failure | Reported with `perror`, exit code 1 |
 | `/proc/uptime` or clock unavailable | Error message, exit code 1 |
 | `SIGINT` / `SIGTERM` | Graceful shutdown (see below) |
+| PID reused by a new process between cycles | Detected via `starttime`; reported as terminated, no longer monitored |
 
 All of these paths go through a single cleanup section at the end of `main`,
 which closes the output file and frees all memory. This means no path leaks
@@ -424,10 +425,11 @@ The service was tested manually on the VM following the steps in
   The interval is at least 1 second.
 - **CPU % is per core**, so it can exceed 100% for multithreaded processes on
   multi-core systems. This is the same convention `top` uses.
-- **PID reuse:** if a monitored process exits and the kernel reuses its PID for
-  a new process within one interval, procmon continues with the new process
-  without noticing. Comparing `starttime` between cycles would detect this,
-  but it is not implemented.
+- - **PID reuse** is detected by comparing each process's `starttime` between
+  cycles. If it changes, the original process has exited and its PID now
+  belongs to a different process, so it is reported as terminated. This case
+  can't be triggered on demand (the kernel cycles through all PIDs before
+  reusing one), so it is not part of the automated test scenarios.
 - **The interval is approximate:** procmon sleeps `-i` seconds after each
   cycle, so the real period is slightly longer than `-i` (by the time it takes
   to read `/proc`). This does not affect CPU %, which uses the actually
